@@ -1,0 +1,264 @@
+version "3.3.0"
+
+//
+
+
+class MultiplayerWarpPoint play {
+	private vector3 pos;
+	private bool active;
+
+	static MultiplayerWarpPoint Create( void ) {
+		MultiplayerWarpPoint newpoint = new( "MultiplayerWarpPoint" );
+		//newpoint.Deactivate();
+
+		return newpoint;
+	}
+
+	void Deactivate( void ) {
+		active = false;
+	}
+
+	void Set( vector3 newpos ) {
+		self.pos = newpos;
+		active = true;
+	}
+
+	vector3 Get( void ) {
+		return self.pos;
+	}
+
+	bool IsActive( void ) {
+		return self.active;
+	}
+} // of class MultiplayerWarpPoint play {}
+
+
+class MultiplayerWarpHandler: EventHandler {
+	private MultiplayerWarpPoint warppoints[ MAXPLAYERS ];
+
+	// Current console command convenient internal temporary variables:
+	private Array<String> cmdargs;
+	private transient ConsoleEvent cmdevent;
+	private uint cmdargssize;
+	private uint cmdplayernum;
+
+	const NORMALCOLOR = "\c-";
+	const DARKCOLOR = "\c[DarkGray]";
+	const HIGHLIGHTCOLOR = "\c[Teal]";
+	const WARNINGCOLOR = "\c[Yellow]";
+	const USAGEPREFIX = WARNINGCOLOR .. "Usage: " .. NORMALCOLOR;
+
+	override void WorldLoaded( WorldEvent e ) {
+		if ( !e.IsSaveGame ) {
+			// De-init the warp points when entering the new map:
+			for ( int i = 0; i < MAXPLAYERS; i++ ) {
+				if ( NULL == warppoints[ i ] )
+					warppoints[ i ] = MultiplayerWarpPoint.Create();
+
+				warppoints[ i ].Deactivate();
+			}
+		}
+	} // of override void WorldLoaded( WorldEvent e ) {}
+
+
+	override void NetworkProcess( ConsoleEvent e ) {
+		String cmdstr = e.Name;
+		cmdstr.ToLower();
+
+		if ( e.Player != -1 && cmdstr.Left( 15 ) == "multiplayerwarp" ) {
+			// Split the input to args:
+			cmdargs.Clear();
+			cmdstr.Split( cmdargs, "`", TOK_SKIPEMPTY );
+
+			// Set convenient internal variables:
+			cmdargssize = cmdargs.Size() - 1; // Excluding "tp", including tp's subcommand.
+			cmdplayernum = e.Player;
+			cmdevent = e;
+
+			// Check for the tp's subcommand:
+			if ( cmdargssize == 0 || cmdargs[ 1 ] == "help" || cmdargs[ 1 ] == "-h" ) {
+				MultiplayerWarpHelpCmd();
+
+			} else if ( cmdargs[ 1 ] == "set" ) {
+				MultiplayerWarpSetCmd();
+
+			} else if ( cmdargs[ 1 ] == "recall" ) {
+				MultiplayerWarpRmCmd();
+
+			} else if ( cmdargs[ 1 ] == "warp" ) {
+				MultiplayerWarpTeleportCmd();
+
+			} else if ( cmdargs[ 1 ] == "to" ) {
+				MultiplayerWarpTeleportToPlayerCmd();
+
+			} else {
+				console.printf( WARNINGCOLOR .. "Unrecognized command. " .. NORMALCOLOR .. "Type \"tp help\" or \"tp -h\" for the list of available commands." );
+			}
+		}
+
+		Super.NetworkProcess( e );
+	} // of override void NetworkProcess( ConsoleEvent e ) {}
+
+	private clearscope bool CheckLocalPlayer( void ) const {
+		return ( cmdplayernum == consoleplayer );
+	}
+
+
+	private void MultiplayerWarpHelpCmd( void ) {
+		// Usage/help print.
+
+		String helpstr = "Multiplayer teleport util. Usage:\n" ..
+						"  \"#Htp set#-\" to set the warp point to current position;\n" ..
+						"  \"#Htp set <x> <y> [z]#-\" to set the warp point to specified position;\n" ..
+						"  \"#Htp recall#-\" to recall (remove) the warp point;\n" ..
+						"  \"#Htp warp#-\" to teleport to the set warp point;\n" ..
+						"  \"#Htp to 1#-\"..\"#Htp to 8#-\" to teleport to player 1..8.\n";
+
+		helpstr.Replace( "#H", HIGHLIGHTCOLOR );
+		helpstr.Replace( "#-", NORMALCOLOR );
+
+		console.printf( helpstr );
+	}
+
+
+	private void MultiplayerWarpSetCmd( void ) {
+		// The "set warp point" command.
+
+		PlayerPawn player = players[ cmdplayernum ].mo;
+		vector3 setpos;
+		bool failure = false;
+
+		if ( cmdargssize == 1 ) {
+			if ( player ) {
+				setpos = player.pos;
+			} else {
+				failure = true;
+				console.printf( WARNINGCOLOR .. "No player body." );
+			}
+
+		} else if ( cmdargssize >= 3 && cmdargssize <= 4 ) {
+			double xyzconv[ 3 ];
+
+			// Converting the "<x> <y> [z]" to the float-point coordinates:
+			for ( int i = 2; i <= cmdargssize && !failure; i++ ) {
+				double coord = cmdargs[ i ].ToDouble();
+
+				if ( coord != 0 || cmdargs[ i ].Left( 1 ) == "0" )
+					xyzconv[ i - 2 ] = coord;
+				else
+					failure = true;
+			}
+
+			if ( cmdargssize == 3 ) {
+				// Auto-selection of the Z coordinate:
+				vector2 xypos = (xyzconv[ 0 ], xyzconv[ 1 ]);
+				xyzconv[ 2 ] = Sector.PointInSector( xypos ).floorplane.ZAtPoint( xypos );
+			}
+
+			if ( failure ) {
+				console.printf( WARNINGCOLOR .. "Illegal coordinates passed." );
+			} else {
+				setpos = (xyzconv[ 0 ], xyzconv[ 1 ], xyzconv[ 2 ]);
+			}
+
+		} else {
+			failure = true;
+		}
+
+		// Set the finish warp position:
+		if ( !failure )
+			warppoints[ cmdplayernum ].Set( setpos );
+		else if ( CheckLocalPlayer() )
+			console.printf( USAGEPREFIX .. "\"tp set\" or \"tp set <x> <y> [z]\"." );
+
+	} // of private void MultiplayerWarpSetCmd( void ) {}
+
+
+	private void MultiplayerWarpRmCmd( void ) {
+		// The "remove warp point" command.
+
+		if ( cmdargssize == 1 ) {
+			warppoints[ cmdplayernum ].Deactivate();
+
+		} else if ( CheckLocalPlayer() ) {
+			console.printf( USAGEPREFIX .. "\"tp recall\"." );
+		}
+	} // of private void MultiplayerWarpRmCmd( void ) {}
+
+
+	private void MultiplayerWarpTeleportCmd( void ) {
+		// The "teleport to warp point" command.
+
+		if ( cmdargssize == 1 ) {
+			if ( warppoints[ cmdplayernum ].IsActive() ) {
+				vector3 tppos = warppoints[ cmdplayernum ].Get();
+				players[ cmdplayernum ].mo.SetOrigin( tppos, false );
+
+				console.printf( "\c[DarkGray]Player " .. cmdplayernum .. " teleported to " .. tppos .. "." );
+
+			} else if ( CheckLocalPlayer() ) {
+				console.printf( "Your warp point currently inactive. Firstly set it up using the \"tp set\" command." );
+			}
+
+		} else if ( CheckLocalPlayer() ) {
+			console.printf( USAGEPREFIX .. "\"tp go\"." );
+		}
+	} // of private void MultiplayerWarpTeleportCmd( void ) {}
+
+
+	private void MultiplayerWarpTeleportToPlayerCmd( void ) {
+		// The "teleport to player" command.
+
+		bool failure = ( cmdargssize != 2 );
+		uint toplayer = 0;
+
+		if ( !failure ) {
+			if ( cmdargs[ 2 ].Left( 1 ) == "p" || cmdargs[ 2 ] == "warp" ) {
+				// Yes, awful overwriting substitution.
+				//for ( int i = 0; i < cmdargs.Size(); i++ ) console.printf( " cmdargs[ %i ]. '%s'", i, cmdargs[ i ] );
+				cmdargs.Delete( 3, 1 );
+				cmdargs[ 2 ] = "warp";
+				cmdargssize = 1;
+				MultiplayerWarpTeleportCmd();
+
+				return; // Yes, gruesome function flow break.
+			}
+
+			toplayer = cmdargs[ 2 ].ToInt();
+			failure = true;
+
+			if ( toplayer < 1 || toplayer > MAXPLAYERS ) {
+				console.printf( WARNINGCOLOR .. "Player number is out-of-range." );
+
+			} else if ( !playeringame[ toplayer - 1 ] ) {
+				console.printf( WARNINGCOLOR .. "Player %i isn't in game.", toplayer );
+
+			} else if ( !players[ toplayer - 1 ].mo ) {
+				console.printf( WARNINGCOLOR .. "Player %i has no body.", toplayer );
+
+			} else {
+				failure = false;
+			}
+		} // of if ( !failure ) {}
+
+		//G_PickPlayerStart(int pnum, int flags = 0);
+
+
+		if ( failure ) {
+			if ( CheckLocalPlayer() )
+				console.printf( USAGEPREFIX .. "\"tp to <player_num>\" (<player_num> should be between 1 and 8) or \"tp to p\" as an alias to \"to go\"." );
+
+		} else if ( toplayer - 1 == cmdplayernum ) {
+			if ( CheckLocalPlayer() )
+				console.printf( DARKCOLOR .. "Teleport to self." );
+
+		} else {
+			vector3 tppos = players[ toplayer - 1 ].mo.pos;
+			players[ cmdplayernum ].mo.SetOrigin( tppos, false );
+
+			console.printf( DARKCOLOR .. "Player " .. (cmdplayernum + 1) .. " teleported to " .. tppos .. "." );
+		}
+	} // of private void MultiplayerWarpTeleportToPlayerCmd( void ) {}
+
+
+} // of class MultiplayerWarpHandler: EventHandler {}
